@@ -40,6 +40,7 @@ const W = canvas.width, H = canvas.height;
 // ─── GAME STATE ───────────────────────────────────────────────────────────────
 const state = {
   supplies: 200,
+  aiSupplies: 200,
   playerUnits: [],
   enemyUnits: [],
   bullets: [],
@@ -49,6 +50,8 @@ const state = {
   lastTime: 0,
   supplyTimer: 0,
   aiTimer: 0,
+  wave: 0,
+  waveInterval: 20,
 };
 
 const HQ = {
@@ -491,6 +494,7 @@ function draw() {
   drawBullets();
   for (const u of [...state.playerUnits,...state.enemyUnits]) drawUnit(u);
   drawDragBox();
+  drawHUD();
 }
 
 // ─── GAME LOOP ────────────────────────────────────────────────────────────────
@@ -499,6 +503,22 @@ function loop(ts) {
   state.lastTime = ts;
 
   if (!state.gameOver) {
+    // Passive supply income
+    state.supplyTimer += dt;
+    if (state.supplyTimer >= 1) {
+      state.supplyTimer -= 1;
+      addSupplies(10);
+    }
+
+    // AI income + wave timer
+    state.aiSupplies += 10 * dt;
+    state.aiTimer += dt;
+    if (state.aiTimer >= state.waveInterval) {
+      state.aiTimer = 0;
+      state.wave++;
+      buildAIWave();
+    }
+
     updateUnits(dt);
     updateCombat(dt);
     updateBullets(dt);
@@ -511,6 +531,57 @@ function loop(ts) {
 }
 
 requestAnimationFrame((ts) => { state.lastTime = ts; requestAnimationFrame(loop); });
+
+// ─── AI WAVE BUILDER ──────────────────────────────────────────────────────────
+function buildAIWave() {
+  let budget = Math.floor(state.aiSupplies);
+  state.aiSupplies = 0;
+
+  // Ramp up unit mix with wave number
+  const tankChance = Math.min(0.65, state.wave * 0.08);
+  const jeepChance = Math.min(0.6,  state.wave * 0.12 + 0.2);
+
+  while (budget >= 50) {
+    let type;
+    if (budget >= 200 && Math.random() < tankChance)      type = 'tank';
+    else if (budget >= 100 && Math.random() < jeepChance) type = 'jeep';
+    else                                                    type = 'soldier';
+    spawnEnemyUnit(type);
+    budget -= UNIT_DEFS[type].cost;
+  }
+
+  // Tighten wave interval as game progresses (min 10s)
+  state.waveInterval = Math.max(10, 20 - state.wave * 0.5);
+}
+
+function spawnEnemyUnit(type) {
+  const def = UNIT_DEFS[type];
+  const spawnX = HQ.enemy.x - 10;
+  const spawnY = HQ.enemy.y + (Math.random() - 0.5) * (HQ.enemy.h - 20);
+  state.enemyUnits.push({
+    x: spawnX, y: spawnY,
+    type, hp: def.hp, maxHp: def.hp,
+    speed: def.speed, range: def.range,
+    damage: def.damage, fireRate: def.fireRate,
+    radius: def.radius, color: def.eColor,
+    selected: false, fireTimer: Math.random() * (1 / def.fireRate),
+    target: 'playerHQ', dest: null, team: 'enemy', dead: false,
+  });
+}
+
+// ─── ON-CANVAS HUD ────────────────────────────────────────────────────────────
+function drawHUD() {
+  const timeLeft = Math.ceil(state.waveInterval - state.aiTimer);
+  const waveLabel = state.wave === 0 ? `First wave in ${timeLeft}s` : `Wave ${state.wave} — next in ${timeLeft}s`;
+
+  // Centre banner
+  ctx.fillStyle = '#00000066';
+  ctx.fillRect(W/2 - 110, 6, 220, 22);
+  ctx.fillStyle = timeLeft <= 5 ? '#ff6644' : '#ffdd88';
+  ctx.font = 'bold 13px Courier New';
+  ctx.textAlign = 'center';
+  ctx.fillText(waveLabel, W/2, 22);
+}
 
 // ─── DEPLOY ───────────────────────────────────────────────────────────────────
 function deployUnit(type) {
