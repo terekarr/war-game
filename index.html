@@ -9,24 +9,13 @@
   body { background: #1a1a1a; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; font-family: 'Courier New', monospace; }
   #gameCanvas { border: 3px solid #555; display: block; cursor: crosshair; }
   #ui {
-    width: 900px;
-    background: #222;
-    border: 3px solid #555;
-    border-top: none;
-    padding: 10px 16px;
-    display: flex;
-    align-items: center;
-    gap: 12px;
+    width: 900px; background: #222; border: 3px solid #555; border-top: none;
+    padding: 10px 16px; display: flex; align-items: center; gap: 12px;
   }
   #ui button {
-    background: #3a5a3a;
-    color: #cfc;
-    border: 2px solid #5a8a5a;
-    padding: 6px 14px;
-    font-family: 'Courier New', monospace;
-    font-size: 13px;
-    cursor: pointer;
-    border-radius: 4px;
+    background: #3a5a3a; color: #cfc; border: 2px solid #5a8a5a;
+    padding: 6px 14px; font-family: 'Courier New', monospace; font-size: 13px;
+    cursor: pointer; border-radius: 4px;
   }
   #ui button:hover { background: #4a7a4a; }
   #ui button:disabled { background: #333; color: #666; border-color: #444; cursor: default; }
@@ -63,11 +52,10 @@ const state = {
 };
 
 const HQ = {
-  player: { x: 60,       y: H/2, w: 80, h: 100, hp: 500, maxHp: 500, color: '#2255aa' },
-  enemy:  { x: W - 140,  y: H/2, w: 80, h: 100, hp: 500, maxHp: 500, color: '#aa2222' },
+  player: { x: 60,      y: H/2, w: 80, h: 100, hp: 500, maxHp: 500, color: '#2255aa' },
+  enemy:  { x: W - 140, y: H/2, w: 80, h: 100, hp: 500, maxHp: 500, color: '#aa2222' },
 };
 
-// drag-select state
 const drag = { active: false, sx: 0, sy: 0, ex: 0, ey: 0 };
 
 // ─── UNIT DEFINITIONS ─────────────────────────────────────────────────────────
@@ -99,20 +87,22 @@ function hqHit(x, y, hq) {
 
 function selectedUnits() { return state.playerUnits.filter(u => u.selected); }
 
+function addSupplies(n) {
+  state.supplies += n;
+  document.getElementById('supplies').textContent = `⚡ Supplies: ${state.supplies}`;
+  updateButtons();
+}
+
 // ─── MOUSE EVENTS ─────────────────────────────────────────────────────────────
 canvas.addEventListener('mousedown', e => {
   if (e.button !== 0) return;
   const { x, y } = canvasPos(e);
-
-  // Did we click a friendly unit?
   const clicked = unitAt(x, y, state.playerUnits);
   if (clicked) {
     if (!e.shiftKey) state.playerUnits.forEach(u => u.selected = false);
     clicked.selected = !clicked.selected;
     return;
   }
-
-  // Otherwise start drag-select
   state.playerUnits.forEach(u => u.selected = false);
   drag.active = true;
   drag.sx = drag.ex = x;
@@ -130,7 +120,6 @@ canvas.addEventListener('mouseup', e => {
   drag.active = false;
   const minX = Math.min(drag.sx, drag.ex), maxX = Math.max(drag.sx, drag.ex);
   const minY = Math.min(drag.sy, drag.ey), maxY = Math.max(drag.sy, drag.ey);
-  // Only apply if it was a real drag (not tiny accidental move)
   if (maxX - minX > 4 || maxY - minY > 4) {
     state.playerUnits.forEach(u => {
       u.selected = u.x >= minX && u.x <= maxX && u.y >= minY && u.y <= maxY;
@@ -143,21 +132,9 @@ canvas.addEventListener('contextmenu', e => {
   const { x, y } = canvasPos(e);
   const sel = selectedUnits();
   if (sel.length === 0) return;
-
-  // Right-click on enemy unit → attack it
   const enemyUnit = unitAt(x, y, state.enemyUnits);
-  if (enemyUnit) {
-    sel.forEach(u => { u.target = enemyUnit; u.dest = null; });
-    return;
-  }
-
-  // Right-click on enemy HQ → attack HQ
-  if (hqHit(x, y, HQ.enemy)) {
-    sel.forEach(u => { u.target = 'enemyHQ'; u.dest = null; });
-    return;
-  }
-
-  // Right-click on ground → move in formation
+  if (enemyUnit) { sel.forEach(u => { u.target = enemyUnit; u.dest = null; }); return; }
+  if (hqHit(x, y, HQ.enemy)) { sel.forEach(u => { u.target = 'enemyHQ'; u.dest = null; }); return; }
   sel.forEach((u, i) => {
     const col = i % 3, row = Math.floor(i / 3);
     u.dest = { x: x + col * 22 - 22, y: y + row * 22 - 22 };
@@ -165,68 +142,193 @@ canvas.addEventListener('contextmenu', e => {
   });
 });
 
-// ─── UNIT UPDATE ──────────────────────────────────────────────────────────────
+// ─── MOVEMENT ─────────────────────────────────────────────────────────────────
 function updateUnits(dt) {
-  for (const u of state.playerUnits) moveUnit(u, dt, state.enemyUnits, HQ.enemy);
-  for (const u of state.enemyUnits)  moveUnit(u, dt, state.playerUnits, HQ.player);
+  for (const u of state.playerUnits) moveUnit(u, dt);
+  for (const u of state.enemyUnits)  moveUnit(u, dt);
 }
 
-function moveUnit(u, dt, enemies, enemyHQ) {
-  // Clean up dead targets
-  if (u.target && u.target !== 'enemyHQ' && u.target !== 'playerHQ' && u.target.hp <= 0) {
-    u.target = null;
-  }
+function moveUnit(u, dt) {
+  if (u.target && u.target !== 'enemyHQ' && u.target !== 'playerHQ' && u.target.dead) u.target = null;
 
-  // AI units auto-acquire nearest enemy
   if (!u.target && !u.dest && u.team === 'enemy') {
-    u.target = nearestEnemy(u, enemies, enemyHQ);
+    u.target = pickTarget(u, state.playerUnits, HQ.player, 'playerHQ');
   }
 
   let goalX, goalY, stopDist;
 
-  if (u.target === 'enemyHQ' || u.target === 'playerHQ') {
-    const hq = u.team === 'player' ? HQ.enemy : HQ.player;
-    goalX = hq.x + hq.w / 2;
-    goalY = hq.y;
-    stopDist = u.range;
+  if (u.target === 'enemyHQ') {
+    goalX = HQ.enemy.x + HQ.enemy.w/2; goalY = HQ.enemy.y; stopDist = u.range;
+  } else if (u.target === 'playerHQ') {
+    goalX = HQ.player.x + HQ.player.w/2; goalY = HQ.player.y; stopDist = u.range;
   } else if (u.target) {
-    goalX = u.target.x;
-    goalY = u.target.y;
-    stopDist = u.range;
+    goalX = u.target.x; goalY = u.target.y; stopDist = u.range;
   } else if (u.dest) {
-    goalX = u.dest.x;
-    goalY = u.dest.y;
-    stopDist = 6;
+    goalX = u.dest.x; goalY = u.dest.y; stopDist = 6;
   } else {
-    return; // nothing to do
-  }
-
-  const dx = goalX - u.x, dy = goalY - u.y;
-  const d = Math.hypot(dx, dy);
-
-  if (d <= stopDist) {
-    if (u.dest) u.dest = null; // arrived
     return;
   }
 
-  u.x += (dx / d) * u.speed * dt;
-  u.y += (dy / d) * u.speed * dt;
-
-  // Keep units on the canvas
+  const dx = goalX - u.x, dy = goalY - u.y, d = Math.hypot(dx, dy);
+  if (d <= stopDist) { if (u.dest) u.dest = null; return; }
+  u.x += (dx/d) * u.speed * dt;
+  u.y += (dy/d) * u.speed * dt;
   u.x = Math.max(u.radius, Math.min(W - u.radius, u.x));
   u.y = Math.max(u.radius, Math.min(H - u.radius, u.y));
 }
 
-function nearestEnemy(u, enemies, enemyHQ) {
+function pickTarget(u, enemies, enemyHQ, hqKey) {
   let best = null, bestD = Infinity;
   for (const e of enemies) {
+    if (e.dead) continue;
     const d = dist(u, e);
     if (d < bestD) { bestD = d; best = e; }
   }
-  const hq = u.team === 'enemy' ? HQ.player : HQ.enemy;
-  const hqD = dist(u, { x: hq.x + hq.w/2, y: hq.y });
-  if (hqD < bestD) return u.team === 'enemy' ? 'playerHQ' : 'enemyHQ';
-  return best;
+  const hqD = dist(u, { x: enemyHQ.x + enemyHQ.w/2, y: enemyHQ.y });
+  return hqD < bestD ? hqKey : best;
+}
+
+// ─── COMBAT ───────────────────────────────────────────────────────────────────
+function updateCombat(dt) {
+  for (const u of state.playerUnits) combatUnit(u, dt, state.enemyUnits, HQ.enemy);
+  for (const u of state.enemyUnits)  combatUnit(u, dt, state.playerUnits, HQ.player);
+}
+
+function combatUnit(u, dt, enemies, enemyHQ) {
+  u.fireTimer = Math.max(0, u.fireTimer - dt);
+  if (u.fireTimer > 0) return;
+
+  let unitTarget = null, hqTarget = null, bestD = Infinity;
+
+  // Explicit target
+  if (u.target === 'enemyHQ' || u.target === 'playerHQ') {
+    const hq = u.target === 'enemyHQ' ? HQ.enemy : HQ.player;
+    const d = dist(u, { x: hq.x + hq.w/2, y: hq.y });
+    if (d <= u.range) { hqTarget = hq; bestD = d; }
+  } else if (u.target && !u.target.dead) {
+    const d = dist(u, u.target);
+    if (d <= u.range) { unitTarget = u.target; bestD = d; }
+  }
+
+  // Auto-scan nearby enemies
+  if (!unitTarget && !hqTarget) {
+    for (const e of enemies) {
+      if (e.dead) continue;
+      const d = dist(u, e);
+      if (d <= u.range && d < bestD) { bestD = d; unitTarget = e; hqTarget = null; }
+    }
+    const hqD = dist(u, { x: enemyHQ.x + enemyHQ.w/2, y: enemyHQ.y });
+    if (hqD <= u.range && hqD < bestD) { hqTarget = enemyHQ; unitTarget = null; }
+  }
+
+  if (!unitTarget && !hqTarget) return;
+
+  u.fireTimer = 1 / u.fireRate;
+
+  state.bullets.push({
+    x: u.x, y: u.y,
+    speed: 320,
+    damage: u.damage,
+    color: u.team === 'player' ? '#ffff88' : '#ffaa44',
+    team: u.team,
+    unitTarget,
+    hqTarget,
+  });
+
+  // Muzzle flash
+  state.particles.push({ x: u.x, y: u.y, vx: 0, vy: 0, life: 1, maxLife: 0.07, color: '#ffffcc', size: 7 });
+}
+
+// ─── BULLETS ──────────────────────────────────────────────────────────────────
+function updateBullets(dt) {
+  state.bullets = state.bullets.filter(b => {
+    let tx, ty;
+
+    if (b.hqTarget) {
+      tx = b.hqTarget.x + b.hqTarget.w/2;
+      ty = b.hqTarget.y;
+    } else if (!b.unitTarget || b.unitTarget.dead) {
+      return false;
+    } else {
+      tx = b.unitTarget.x;
+      ty = b.unitTarget.y;
+    }
+
+    const dx = tx - b.x, dy = ty - b.y, d = Math.hypot(dx, dy);
+
+    if (d < 10) {
+      // Hit!
+      if (b.hqTarget) {
+        b.hqTarget.hp = Math.max(0, b.hqTarget.hp - b.damage);
+        spawnHit(b.x, b.y, '#ff6600');
+      } else {
+        b.unitTarget.hp -= b.damage;
+        if (b.unitTarget.hp <= 0 && !b.unitTarget.dead) {
+          b.unitTarget.dead = true;
+          spawnExplosion(b.unitTarget.x, b.unitTarget.y, b.unitTarget.color);
+          if (b.team === 'player') addSupplies(25);
+        }
+      }
+      return false;
+    }
+
+    b.x += (dx/d) * b.speed * dt;
+    b.y += (dy/d) * b.speed * dt;
+    return true;
+  });
+}
+
+// ─── PARTICLES ────────────────────────────────────────────────────────────────
+function spawnExplosion(x, y, color) {
+  for (let i = 0; i < 12; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 40 + Math.random() * 100;
+    state.particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      life: 1, maxLife: 0.5 + Math.random() * 0.4,
+      color: i % 3 === 0 ? '#ff8800' : i % 3 === 1 ? '#ffdd00' : color,
+      size: 2 + Math.random() * 5,
+    });
+  }
+  // smoke
+  for (let i = 0; i < 5; i++) {
+    state.particles.push({
+      x: x + (Math.random()-0.5)*10, y: y + (Math.random()-0.5)*10,
+      vx: (Math.random()-0.5)*20, vy: -20 - Math.random()*30,
+      life: 1, maxLife: 0.8 + Math.random()*0.5,
+      color: '#888888', size: 4 + Math.random()*6,
+    });
+  }
+}
+
+function spawnHit(x, y, color) {
+  for (let i = 0; i < 5; i++) {
+    const angle = Math.random() * Math.PI * 2;
+    state.particles.push({
+      x, y,
+      vx: Math.cos(angle) * (20 + Math.random()*40),
+      vy: Math.sin(angle) * (20 + Math.random()*40),
+      life: 1, maxLife: 0.2,
+      color, size: 2 + Math.random()*3,
+    });
+  }
+}
+
+function updateParticles(dt) {
+  state.particles = state.particles.filter(p => {
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
+    p.vx *= 0.92; p.vy *= 0.92;
+    p.life -= dt / p.maxLife;
+    return p.life > 0;
+  });
+}
+
+function cleanDeadUnits() {
+  state.playerUnits = state.playerUnits.filter(u => !u.dead);
+  state.enemyUnits  = state.enemyUnits.filter(u => !u.dead);
 }
 
 // ─── MAP DRAWING ──────────────────────────────────────────────────────────────
@@ -236,73 +338,54 @@ function drawMap() {
   ground.addColorStop(0.35, '#3a5228');
   ground.addColorStop(0.65, '#3a5228');
   ground.addColorStop(1,    '#3d1a1a');
-  ctx.fillStyle = ground;
-  ctx.fillRect(0, 0, W, H);
-
-  // Dirt road
-  ctx.fillStyle = '#7a6040';
-  ctx.fillRect(0, H/2 - 40, W, 80);
-  ctx.strokeStyle = '#a08050';
-  ctx.setLineDash([30, 20]);
-  ctx.lineWidth = 3;
+  ctx.fillStyle = ground; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#7a6040'; ctx.fillRect(0, H/2-40, W, 80);
+  ctx.strokeStyle = '#a08050'; ctx.setLineDash([30,20]); ctx.lineWidth = 3;
   ctx.beginPath(); ctx.moveTo(0, H/2); ctx.lineTo(W, H/2); ctx.stroke();
   ctx.setLineDash([]);
-
-  drawTrees([140,40], [260,25], [400,55], [540,30], [660,45], [760,35]);
-  drawTrees([160,H-50], [300,H-35], [450,H-60], [590,H-40], [720,H-50]);
-  drawRocks([200,180], [350,420], [550,160], [700,380]);
+  drawTrees([140,40],[260,25],[400,55],[540,30],[660,45],[760,35]);
+  drawTrees([160,H-50],[300,H-35],[450,H-60],[590,H-40],[720,H-50]);
+  drawRocks([200,180],[350,420],[550,160],[700,380]);
 }
 
 function drawTrees() {
   for (const [x,y] of arguments) {
     ctx.fillStyle = '#1a3a10';
-    ctx.beginPath(); ctx.moveTo(x, y-22); ctx.lineTo(x-14, y+8); ctx.lineTo(x+14, y+8); ctx.closePath(); ctx.fill();
-    ctx.beginPath(); ctx.moveTo(x, y-36); ctx.lineTo(x-10, y-8); ctx.lineTo(x+10, y-8); ctx.closePath(); ctx.fill();
-    ctx.fillStyle = '#5a3a20';
-    ctx.fillRect(x-4, y+8, 8, 14);
+    ctx.beginPath(); ctx.moveTo(x,y-22); ctx.lineTo(x-14,y+8); ctx.lineTo(x+14,y+8); ctx.closePath(); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(x,y-36); ctx.lineTo(x-10,y-8); ctx.lineTo(x+10,y-8); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = '#5a3a20'; ctx.fillRect(x-4,y+8,8,14);
   }
 }
 
 function drawRocks() {
   for (const [x,y] of arguments) {
-    ctx.fillStyle = '#556655';
-    ctx.beginPath(); ctx.ellipse(x, y, 18, 11, 0.3, 0, Math.PI*2); ctx.fill();
-    ctx.fillStyle = '#667766';
-    ctx.beginPath(); ctx.ellipse(x-5, y-4, 10, 6, -0.2, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#556655'; ctx.beginPath(); ctx.ellipse(x,y,18,11,0.3,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle = '#667766'; ctx.beginPath(); ctx.ellipse(x-5,y-4,10,6,-0.2,0,Math.PI*2); ctx.fill();
   }
 }
 
 // ─── HQ DRAWING ───────────────────────────────────────────────────────────────
 function drawHQ(hq, label) {
   const { x, y, w, h, hp, maxHp, color } = hq;
-  const cx = x + w/2, top = y - h/2;
-
-  ctx.fillStyle = color;
-  ctx.fillRect(x, top, w, h);
-
-  const notchW = 12, notchH = 10, gap = 8;
-  for (let nx = x + 4; nx < x + w - notchW; nx += notchW + gap)
-    ctx.fillRect(nx, top - notchH, notchW, notchH);
-
-  ctx.strokeStyle = '#ffffff44'; ctx.lineWidth = 2;
-  ctx.strokeRect(x, top, w, h);
-
-  ctx.strokeStyle = '#aaa'; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.moveTo(cx, top-10); ctx.lineTo(cx, top-40); ctx.stroke();
-  ctx.fillStyle = label === 'ALLIED' ? '#4488ff' : '#ff4444';
-  ctx.beginPath(); ctx.moveTo(cx, top-40); ctx.lineTo(cx+20, top-33); ctx.lineTo(cx, top-26); ctx.closePath(); ctx.fill();
-
-  ctx.fillStyle = '#fff'; ctx.font = 'bold 11px Courier New'; ctx.textAlign = 'center';
-  ctx.fillText(label, cx, top - 48);
-
-  const barW = w + 20, barH = 10, barX = x - 10, barY = top - 62;
-  ctx.fillStyle = '#333'; ctx.fillRect(barX, barY, barW, barH);
-  const pct = Math.max(0, hp / maxHp);
-  ctx.fillStyle = pct > 0.5 ? '#44cc44' : pct > 0.25 ? '#ccaa22' : '#cc3322';
-  ctx.fillRect(barX, barY, barW * pct, barH);
-  ctx.strokeStyle = '#666'; ctx.lineWidth = 1; ctx.strokeRect(barX, barY, barW, barH);
-  ctx.fillStyle = '#eee'; ctx.font = '10px Courier New';
-  ctx.fillText(`${Math.ceil(hp)} / ${maxHp}`, cx, barY - 2);
+  const cx = x+w/2, top = y-h/2;
+  ctx.fillStyle = color; ctx.fillRect(x, top, w, h);
+  const notchW=12, notchH=10, gap=8;
+  for (let nx=x+4; nx<x+w-notchW; nx+=notchW+gap) ctx.fillRect(nx, top-notchH, notchW, notchH);
+  ctx.strokeStyle='#ffffff44'; ctx.lineWidth=2; ctx.strokeRect(x,top,w,h);
+  ctx.strokeStyle='#aaa'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.moveTo(cx,top-10); ctx.lineTo(cx,top-40); ctx.stroke();
+  ctx.fillStyle = label==='ALLIED' ? '#4488ff' : '#ff4444';
+  ctx.beginPath(); ctx.moveTo(cx,top-40); ctx.lineTo(cx+20,top-33); ctx.lineTo(cx,top-26); ctx.closePath(); ctx.fill();
+  ctx.fillStyle='#fff'; ctx.font='bold 11px Courier New'; ctx.textAlign='center';
+  ctx.fillText(label, cx, top-48);
+  const barW=w+20, barH=10, barX=x-10, barY=top-62;
+  ctx.fillStyle='#333'; ctx.fillRect(barX,barY,barW,barH);
+  const pct = Math.max(0, hp/maxHp);
+  ctx.fillStyle = pct>0.5?'#44cc44':pct>0.25?'#ccaa22':'#cc3322';
+  ctx.fillRect(barX,barY,barW*pct,barH);
+  ctx.strokeStyle='#666'; ctx.lineWidth=1; ctx.strokeRect(barX,barY,barW,barH);
+  ctx.fillStyle='#eee'; ctx.font='10px Courier New';
+  ctx.fillText(`${Math.ceil(hp)} / ${maxHp}`, cx, barY-2);
 }
 
 // ─── UNIT DRAWING ─────────────────────────────────────────────────────────────
@@ -311,68 +394,90 @@ function drawUnit(u) {
   const def = UNIT_DEFS[type];
 
   if (selected) {
-    ctx.strokeStyle = '#ffff00'; ctx.lineWidth = 2; ctx.setLineDash([4,3]);
-    ctx.beginPath(); ctx.arc(x, y, radius+4, 0, Math.PI*2); ctx.stroke();
+    ctx.strokeStyle='#ffff00'; ctx.lineWidth=2; ctx.setLineDash([4,3]);
+    ctx.beginPath(); ctx.arc(x,y,radius+4,0,Math.PI*2); ctx.stroke();
     ctx.setLineDash([]);
   }
 
   if (type === 'soldier') {
     ctx.fillStyle = color;
-    ctx.beginPath(); ctx.arc(x, y+2, radius-2, 0, Math.PI*2); ctx.fill();
-    ctx.beginPath(); ctx.arc(x, y-4, 7, Math.PI, 0); ctx.fill();
-    ctx.fillStyle = color === def.color ? '#88aaff' : '#ff8888';
-    ctx.fillRect(x-7, y-5, 14, 3);
+    ctx.beginPath(); ctx.arc(x,y+2,radius-2,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x,y-4,7,Math.PI,0); ctx.fill();
+    ctx.fillStyle = u.team==='player' ? '#88aaff' : '#ff8888';
+    ctx.fillRect(x-7,y-5,14,3);
   } else if (type === 'jeep') {
-    ctx.fillStyle = color;
-    ctx.fillRect(x-radius, y-radius/2, radius*2, radius);
-    ctx.fillStyle = '#222';
-    ctx.beginPath(); ctx.arc(x-radius+5, y+radius/2, 5, 0, Math.PI*2); ctx.fill();
-    ctx.beginPath(); ctx.arc(x+radius-5, y+radius/2, 5, 0, Math.PI*2); ctx.fill();
-    ctx.fillStyle = '#aaddff88';
-    ctx.fillRect(x-6, y-radius/2-4, 12, 6);
+    ctx.fillStyle = color; ctx.fillRect(x-radius,y-radius/2,radius*2,radius);
+    ctx.fillStyle='#222';
+    ctx.beginPath(); ctx.arc(x-radius+5,y+radius/2,5,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.arc(x+radius-5,y+radius/2,5,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#aaddff88'; ctx.fillRect(x-6,y-radius/2-4,12,6);
   } else if (type === 'tank') {
-    ctx.fillStyle = '#333';
-    ctx.fillRect(x-radius, y-radius+4, radius*2, 8);
-    ctx.fillRect(x-radius, y+radius-12, radius*2, 8);
-    ctx.fillStyle = color;
-    ctx.fillRect(x-radius+4, y-radius+6, (radius-4)*2, (radius-6)*2);
-    ctx.beginPath(); ctx.arc(x, y, 9, 0, Math.PI*2); ctx.fill();
-    const dir = u.team === 'player' ? 1 : -1;
-    ctx.strokeStyle = '#aaa'; ctx.lineWidth = 3;
-    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x+dir*18, y); ctx.stroke();
+    ctx.fillStyle='#333';
+    ctx.fillRect(x-radius,y-radius+4,radius*2,8);
+    ctx.fillRect(x-radius,y+radius-12,radius*2,8);
+    ctx.fillStyle=color;
+    ctx.fillRect(x-radius+4,y-radius+6,(radius-4)*2,(radius-6)*2);
+    ctx.beginPath(); ctx.arc(x,y,9,0,Math.PI*2); ctx.fill();
+    const dir = u.team==='player' ? 1 : -1;
+    ctx.strokeStyle='#aaa'; ctx.lineWidth=3;
+    ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+dir*18,y); ctx.stroke();
   }
 
-  ctx.strokeStyle = '#ffffff55'; ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI*2); ctx.stroke();
+  ctx.strokeStyle='#ffffff55'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.arc(x,y,radius,0,Math.PI*2); ctx.stroke();
 
-  const bw = radius * 2.2;
-  ctx.fillStyle = '#333';
-  ctx.fillRect(x-bw/2, y-radius-10, bw, 5);
-  ctx.fillStyle = hp/maxHp > 0.5 ? '#44cc44' : '#cc4422';
-  ctx.fillRect(x-bw/2, y-radius-10, bw*(hp/maxHp), 5);
+  const bw = radius*2.2;
+  ctx.fillStyle='#333'; ctx.fillRect(x-bw/2,y-radius-10,bw,5);
+  ctx.fillStyle = hp/maxHp>0.5?'#44cc44':'#cc4422';
+  ctx.fillRect(x-bw/2,y-radius-10,bw*(hp/maxHp),5);
 }
 
-// ─── DRAG SELECT BOX ──────────────────────────────────────────────────────────
+// ─── BULLET DRAWING ───────────────────────────────────────────────────────────
+function drawBullets() {
+  for (const b of state.bullets) {
+    ctx.fillStyle = b.color;
+    ctx.beginPath(); ctx.arc(b.x, b.y, 3, 0, Math.PI*2); ctx.fill();
+    // tracer trail
+    ctx.strokeStyle = b.color + '66';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(b.x, b.y);
+    const tx = b.hqTarget ? b.hqTarget.x+b.hqTarget.w/2 : (b.unitTarget?.x ?? b.x);
+    const ty = b.hqTarget ? b.hqTarget.y : (b.unitTarget?.y ?? b.y);
+    const dx = b.x-tx, dy = b.y-ty, d = Math.hypot(dx,dy)||1;
+    ctx.lineTo(b.x + (dx/d)*12, b.y + (dy/d)*12);
+    ctx.stroke();
+  }
+}
+
+// ─── PARTICLE DRAWING ─────────────────────────────────────────────────────────
+function drawParticles() {
+  for (const p of state.particles) {
+    ctx.globalAlpha = Math.max(0, p.life);
+    ctx.fillStyle = p.color;
+    ctx.beginPath(); ctx.arc(p.x, p.y, Math.max(0.5, p.size * p.life), 0, Math.PI*2); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+// ─── DRAG BOX & MARKERS ───────────────────────────────────────────────────────
 function drawDragBox() {
   if (!drag.active) return;
-  const x = Math.min(drag.sx, drag.ex), y = Math.min(drag.sy, drag.ey);
-  const w = Math.abs(drag.ex - drag.sx), h = Math.abs(drag.ey - drag.sy);
-  ctx.strokeStyle = '#ffff00aa'; ctx.lineWidth = 1; ctx.setLineDash([4,2]);
-  ctx.strokeRect(x, y, w, h);
-  ctx.fillStyle = '#ffff0015';
-  ctx.fillRect(x, y, w, h);
+  const x=Math.min(drag.sx,drag.ex), y=Math.min(drag.sy,drag.ey);
+  const w=Math.abs(drag.ex-drag.sx), h=Math.abs(drag.ey-drag.sy);
+  ctx.strokeStyle='#ffff00aa'; ctx.lineWidth=1; ctx.setLineDash([4,2]);
+  ctx.strokeRect(x,y,w,h);
+  ctx.fillStyle='#ffff0015'; ctx.fillRect(x,y,w,h);
   ctx.setLineDash([]);
 }
 
-// ─── DRAW MOVE MARKERS ────────────────────────────────────────────────────────
 function drawMoveMarkers() {
   for (const u of state.playerUnits) {
     if (!u.dest) continue;
-    ctx.strokeStyle = '#00ff0066'; ctx.lineWidth = 1; ctx.setLineDash([3,3]);
-    ctx.beginPath(); ctx.moveTo(u.x, u.y); ctx.lineTo(u.dest.x, u.dest.y); ctx.stroke();
+    ctx.strokeStyle='#00ff0066'; ctx.lineWidth=1; ctx.setLineDash([3,3]);
+    ctx.beginPath(); ctx.moveTo(u.x,u.y); ctx.lineTo(u.dest.x,u.dest.y); ctx.stroke();
     ctx.setLineDash([]);
-    ctx.fillStyle = '#00ff0088';
-    ctx.beginPath(); ctx.arc(u.dest.x, u.dest.y, 4, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle='#00ff0088';
+    ctx.beginPath(); ctx.arc(u.dest.x,u.dest.y,4,0,Math.PI*2); ctx.fill();
   }
 }
 
@@ -380,9 +485,11 @@ function drawMoveMarkers() {
 function draw() {
   drawMap();
   drawMoveMarkers();
-  drawHQ(HQ.player, 'ALLIED');
-  drawHQ(HQ.enemy,  'ENEMY');
-  for (const u of [...state.playerUnits, ...state.enemyUnits]) drawUnit(u);
+  drawHQ(HQ.player,'ALLIED');
+  drawHQ(HQ.enemy,'ENEMY');
+  drawParticles();
+  drawBullets();
+  for (const u of [...state.playerUnits,...state.enemyUnits]) drawUnit(u);
   drawDragBox();
 }
 
@@ -391,7 +498,13 @@ function loop(ts) {
   const dt = Math.min((ts - state.lastTime) / 1000, 0.05);
   state.lastTime = ts;
 
-  if (!state.gameOver) updateUnits(dt);
+  if (!state.gameOver) {
+    updateUnits(dt);
+    updateCombat(dt);
+    updateBullets(dt);
+    updateParticles(dt);
+    cleanDeadUnits();
+  }
 
   draw();
   requestAnimationFrame(loop);
@@ -403,9 +516,7 @@ requestAnimationFrame((ts) => { state.lastTime = ts; requestAnimationFrame(loop)
 function deployUnit(type) {
   const def = UNIT_DEFS[type];
   if (state.supplies < def.cost) return;
-  state.supplies -= def.cost;
-  document.getElementById('supplies').textContent = `⚡ Supplies: ${state.supplies}`;
-
+  addSupplies(-def.cost);
   const spawnX = HQ.player.x + HQ.player.w + 10;
   const spawnY = HQ.player.y + (Math.random() - 0.5) * (HQ.player.h - 20);
   state.playerUnits.push({
@@ -414,10 +525,9 @@ function deployUnit(type) {
     speed: def.speed, range: def.range,
     damage: def.damage, fireRate: def.fireRate,
     radius: def.radius, color: def.color,
-    selected: false, fireTimer: 0,
-    target: null, dest: null, team: 'player',
+    selected: false, fireTimer: Math.random() * (1/def.fireRate),
+    target: null, dest: null, team: 'player', dead: false,
   });
-  updateButtons();
 }
 
 function updateButtons() {
