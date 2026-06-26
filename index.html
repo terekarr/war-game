@@ -8,28 +8,49 @@
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { background: #1a1a1a; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; font-family: 'Courier New', monospace; }
   #gameCanvas { border: 3px solid #555; display: block; cursor: crosshair; }
-  #ui {
-    width: 900px; background: #222; border: 3px solid #555; border-top: none;
-    padding: 10px 16px; display: flex; align-items: center; gap: 12px;
+  #ui { width: 900px; background: #1c1c1c; border: 3px solid #555; border-top: none; }
+  .ui-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 12px; border-bottom: 1px solid #333;
   }
-  #ui button {
-    background: #3a5a3a; color: #cfc; border: 2px solid #5a8a5a;
-    padding: 6px 14px; font-family: 'Courier New', monospace; font-size: 13px;
-    cursor: pointer; border-radius: 4px;
+  .ui-row:last-child { border-bottom: none; }
+  .ui-label { color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; white-space: nowrap; }
+  button {
+    background: #2e4a2e; color: #cfc; border: 1.5px solid #4a7a4a;
+    padding: 5px 10px; font-family: 'Courier New', monospace; font-size: 12px;
+    cursor: pointer; border-radius: 3px; white-space: nowrap;
   }
-  #ui button:hover { background: #4a7a4a; }
-  #ui button:disabled { background: #333; color: #666; border-color: #444; cursor: default; }
+  button:hover:not(:disabled) { background: #3a6a3a; }
+  button:disabled { background: #2a2a2a; color: #555; border-color: #383838; cursor: default; }
+  button.active { background: #4a7a2a; border-color: #88cc44; color: #ccff88; }
   #supplies { color: #ffd700; font-size: 14px; font-weight: bold; margin-right: auto; }
+  #zoneBonus { color: #88ffcc; font-size: 12px; }
 </style>
 </head>
 <body>
 
 <canvas id="gameCanvas" width="900" height="580"></canvas>
 <div id="ui">
-  <span id="supplies">⚡ Supplies: 200</span>
-  <button id="btnSoldier" onclick="deployUnit('soldier')">🪖 Soldier ($50)</button>
-  <button id="btnJeep"    onclick="deployUnit('jeep')">🚙 Jeep ($100)</button>
-  <button id="btnTank"    onclick="deployUnit('tank')">🛡 Tank ($200)</button>
+  <div class="ui-row">
+    <span id="supplies">⚡ Supplies: 200</span>
+    <span id="zoneBonus"></span>
+    <span class="ui-label">Deploy:</span>
+    <button id="btnSoldier" onclick="deployUnit('soldier')">🪖 Soldier $50</button>
+    <button id="btnJeep"    onclick="deployUnit('jeep')">🚙 Jeep $100</button>
+    <button id="btnTank"    onclick="deployUnit('tank')">🛡 Tank $200</button>
+    <button id="btnHeli"    onclick="deployUnit('heli')">🚁 Heli $150</button>
+  </div>
+  <div class="ui-row">
+    <span class="ui-label">Build:</span>
+    <button id="btnDepot"  onclick="setBuildMode('depot')">🏭 Depot $150</button>
+    <button id="btnTurret" onclick="setBuildMode('turret')">🗼 Turret $200</button>
+    <span style="color:#444;margin:0 4px">│</span>
+    <span class="ui-label">Upgrade:</span>
+    <button id="btnUpInfantry" onclick="upgradeCategory('infantry')">⬆ Infantry</button>
+    <button id="btnUpArmor"    onclick="upgradeCategory('armor')">⬆ Armor</button>
+    <button id="btnUpAir"      onclick="upgradeCategory('air')">⬆ Air</button>
+    <span id="buildHint" style="color:#88cc44;font-size:11px;margin-left:auto;display:none">Click your base to place</span>
+  </div>
 </div>
 
 <script>
@@ -37,21 +58,38 @@ const canvas = document.getElementById('gameCanvas');
 const ctx    = canvas.getContext('2d');
 const W = canvas.width, H = canvas.height;
 
+// ─── DEFINITIONS ──────────────────────────────────────────────────────────────
+const UNIT_DEFS = {
+  soldier: { cost: 50,  hp: 40,  speed: 60,  range: 80,  damage: 8,  fireRate: 1.2, radius: 10, color: '#4488ff', eColor: '#ff4444' },
+  jeep:    { cost: 100, hp: 80,  speed: 110, range: 120, damage: 15, fireRate: 0.9, radius: 14, color: '#3399ff', eColor: '#ff6633' },
+  tank:    { cost: 200, hp: 200, speed: 35,  range: 170, damage: 40, fireRate: 0.5, radius: 18, color: '#1155cc', eColor: '#cc1111' },
+  heli:    { cost: 150, hp: 60,  speed: 95,  range: 130, damage: 12, fireRate: 1.0, radius: 13, color: '#22ccaa', eColor: '#cc8822' },
+};
+
+const BUILDING_DEFS = {
+  depot:  { cost: 150, income: 8,  label: 'DEPOT',  color: '#886622' },
+  turret: { cost: 200, range: 150, damage: 22, fireRate: 0.9, label: 'TURRET', color: '#556644' },
+};
+
+const UPGRADE_CATS = {
+  infantry: { applies: ['soldier'],       costs: [150, 250], label: 'Infantry' },
+  armor:    { applies: ['jeep','tank'],   costs: [200, 350], label: 'Armor' },
+  air:      { applies: ['heli'],          costs: [175, 300], label: 'Air' },
+};
+
 // ─── GAME STATE ───────────────────────────────────────────────────────────────
 const state = {
   supplies: 200,
   aiSupplies: 200,
-  playerUnits: [],
-  enemyUnits: [],
-  bullets: [],
-  particles: [],
-  gameOver: false,
-  winner: null,
+  playerUnits: [], enemyUnits: [],
+  bullets: [], particles: [],
+  buildings: [],
+  buildMode: null,
+  upgradeLevels: { infantry: 0, armor: 0, air: 0 },
+  gameOver: false, winner: null,
   lastTime: 0,
-  supplyTimer: 0,
-  aiTimer: 0,
-  wave: 0,
-  waveInterval: 20,
+  supplyTimer: 0, zoneTimer: 0,
+  aiTimer: 0, wave: 0, waveInterval: 20,
 };
 
 const HQ = {
@@ -59,47 +97,62 @@ const HQ = {
   enemy:  { x: W - 140, y: H/2, w: 80, h: 100, hp: 500, maxHp: 500, color: '#aa2222' },
 };
 
+const ZONES = [
+  { x: 310, y: 155,    radius: 36, owner: null, progress: 50, bonus: 5, supplyTimer: 0 },
+  { x: 450, y: H/2,    radius: 36, owner: null, progress: 50, bonus: 8, supplyTimer: 0 },
+  { x: 590, y: H-140,  radius: 36, owner: null, progress: 50, bonus: 5, supplyTimer: 0 },
+];
+
 const drag = { active: false, sx: 0, sy: 0, ex: 0, ey: 0 };
 
-// ─── UNIT DEFINITIONS ─────────────────────────────────────────────────────────
-const UNIT_DEFS = {
-  soldier: { cost: 50,  hp: 40,  speed: 60,  range: 80,  damage: 8,  fireRate: 1.2, radius: 10, color: '#4488ff', eColor: '#ff4444' },
-  jeep:    { cost: 100, hp: 80,  speed: 110, range: 120, damage: 15, fireRate: 0.9, radius: 14, color: '#3399ff', eColor: '#ff6633' },
-  tank:    { cost: 200, hp: 200, speed: 35,  range: 170, damage: 40, fireRate: 0.5, radius: 18, color: '#1155cc', eColor: '#cc1111' },
-};
-
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
-function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
-
-function canvasPos(e) {
-  const r = canvas.getBoundingClientRect();
-  return { x: e.clientX - r.left, y: e.clientY - r.top };
-}
-
+function dist(a, b)  { return Math.hypot(a.x - b.x, a.y - b.y); }
+function canvasPos(e){ const r = canvas.getBoundingClientRect(); return { x: e.clientX-r.left, y: e.clientY-r.top }; }
 function unitAt(x, y, units) {
-  for (let i = units.length - 1; i >= 0; i--) {
+  for (let i = units.length-1; i >= 0; i--) {
     const u = units[i];
-    if (Math.hypot(u.x - x, u.y - y) <= u.radius + 4) return u;
+    if (Math.hypot(u.x-x, u.y-y) <= u.radius+4) return u;
   }
   return null;
 }
-
-function hqHit(x, y, hq) {
-  return x >= hq.x && x <= hq.x + hq.w && y >= hq.y - hq.h/2 && y <= hq.y + hq.h/2;
-}
-
+function hqHit(x, y, hq) { return x>=hq.x && x<=hq.x+hq.w && y>=hq.y-hq.h/2 && y<=hq.y+hq.h/2; }
 function selectedUnits() { return state.playerUnits.filter(u => u.selected); }
 
 function addSupplies(n) {
-  state.supplies += n;
+  state.supplies = Math.max(0, state.supplies + n);
   document.getElementById('supplies').textContent = `⚡ Supplies: ${state.supplies}`;
-  updateButtons();
+  updateAllButtons();
+}
+
+function getUpgradeMult(type) {
+  for (const [cat, def] of Object.entries(UPGRADE_CATS)) {
+    if (def.applies.includes(type)) return 1 + state.upgradeLevels[cat] * 0.3;
+  }
+  return 1;
 }
 
 // ─── MOUSE EVENTS ─────────────────────────────────────────────────────────────
 canvas.addEventListener('mousedown', e => {
   if (e.button !== 0) return;
   const { x, y } = canvasPos(e);
+
+  // Build mode: place building in player base area
+  if (state.buildMode) {
+    const def = BUILDING_DEFS[state.buildMode];
+    if (x >= 80 && x <= 230 && y >= 30 && y <= H-30 && state.supplies >= def.cost && state.buildings.length < 5) {
+      addSupplies(-def.cost);
+      const b = { x, y, type: state.buildMode, fireTimer: 0 };
+      if (state.buildMode === 'turret') { b.range = def.range; b.damage = def.damage; b.fireRate = def.fireRate; }
+      state.buildings.push(b);
+    }
+    state.buildMode = null;
+    canvas.style.cursor = 'crosshair';
+    document.getElementById('buildHint').style.display = 'none';
+    document.getElementById('btnDepot').classList.remove('active');
+    document.getElementById('btnTurret').classList.remove('active');
+    return;
+  }
+
   const clicked = unitAt(x, y, state.playerUnits);
   if (clicked) {
     if (!e.shiftKey) state.playerUnits.forEach(u => u.selected = false);
@@ -107,27 +160,21 @@ canvas.addEventListener('mousedown', e => {
     return;
   }
   state.playerUnits.forEach(u => u.selected = false);
-  drag.active = true;
-  drag.sx = drag.ex = x;
-  drag.sy = drag.ey = y;
+  drag.active = true; drag.sx = drag.ex = x; drag.sy = drag.ey = y;
 });
 
 canvas.addEventListener('mousemove', e => {
   if (!drag.active) return;
-  const { x, y } = canvasPos(e);
-  drag.ex = x; drag.ey = y;
+  const { x, y } = canvasPos(e); drag.ex = x; drag.ey = y;
 });
 
 canvas.addEventListener('mouseup', e => {
   if (!drag.active) return;
   drag.active = false;
-  const minX = Math.min(drag.sx, drag.ex), maxX = Math.max(drag.sx, drag.ex);
-  const minY = Math.min(drag.sy, drag.ey), maxY = Math.max(drag.sy, drag.ey);
-  if (maxX - minX > 4 || maxY - minY > 4) {
-    state.playerUnits.forEach(u => {
-      u.selected = u.x >= minX && u.x <= maxX && u.y >= minY && u.y <= maxY;
-    });
-  }
+  const minX=Math.min(drag.sx,drag.ex), maxX=Math.max(drag.sx,drag.ex);
+  const minY=Math.min(drag.sy,drag.ey), maxY=Math.max(drag.sy,drag.ey);
+  if (maxX-minX > 4 || maxY-minY > 4)
+    state.playerUnits.forEach(u => { u.selected = u.x>=minX && u.x<=maxX && u.y>=minY && u.y<=maxY; });
 });
 
 canvas.addEventListener('contextmenu', e => {
@@ -135,13 +182,12 @@ canvas.addEventListener('contextmenu', e => {
   const { x, y } = canvasPos(e);
   const sel = selectedUnits();
   if (sel.length === 0) return;
-  const enemyUnit = unitAt(x, y, state.enemyUnits);
-  if (enemyUnit) { sel.forEach(u => { u.target = enemyUnit; u.dest = null; }); return; }
+  const eu = unitAt(x, y, state.enemyUnits);
+  if (eu) { sel.forEach(u => { u.target = eu; u.dest = null; }); return; }
   if (hqHit(x, y, HQ.enemy)) { sel.forEach(u => { u.target = 'enemyHQ'; u.dest = null; }); return; }
   sel.forEach((u, i) => {
-    const col = i % 3, row = Math.floor(i / 3);
-    u.dest = { x: x + col * 22 - 22, y: y + row * 22 - 22 };
-    u.target = null;
+    const col=i%3, row=Math.floor(i/3);
+    u.dest = { x: x+col*22-22, y: y+row*22-22 }; u.target = null;
   });
 });
 
@@ -153,114 +199,131 @@ function updateUnits(dt) {
 
 function moveUnit(u, dt) {
   if (u.target && u.target !== 'enemyHQ' && u.target !== 'playerHQ' && u.target.dead) u.target = null;
-
-  if (!u.target && !u.dest && u.team === 'enemy') {
+  if (!u.target && !u.dest && u.team === 'enemy')
     u.target = pickTarget(u, state.playerUnits, HQ.player, 'playerHQ');
-  }
 
   let goalX, goalY, stopDist;
+  if      (u.target === 'enemyHQ')  { goalX=HQ.enemy.x+HQ.enemy.w/2;   goalY=HQ.enemy.y;   stopDist=u.range; }
+  else if (u.target === 'playerHQ') { goalX=HQ.player.x+HQ.player.w/2; goalY=HQ.player.y;  stopDist=u.range; }
+  else if (u.target)                { goalX=u.target.x; goalY=u.target.y; stopDist=u.range; }
+  else if (u.dest)                  { goalX=u.dest.x;   goalY=u.dest.y;   stopDist=6; }
+  else return;
 
-  if (u.target === 'enemyHQ') {
-    goalX = HQ.enemy.x + HQ.enemy.w/2; goalY = HQ.enemy.y; stopDist = u.range;
-  } else if (u.target === 'playerHQ') {
-    goalX = HQ.player.x + HQ.player.w/2; goalY = HQ.player.y; stopDist = u.range;
-  } else if (u.target) {
-    goalX = u.target.x; goalY = u.target.y; stopDist = u.range;
-  } else if (u.dest) {
-    goalX = u.dest.x; goalY = u.dest.y; stopDist = 6;
-  } else {
-    return;
-  }
-
-  const dx = goalX - u.x, dy = goalY - u.y, d = Math.hypot(dx, dy);
-  if (d <= stopDist) { if (u.dest) u.dest = null; return; }
-  u.x += (dx/d) * u.speed * dt;
-  u.y += (dy/d) * u.speed * dt;
-  u.x = Math.max(u.radius, Math.min(W - u.radius, u.x));
-  u.y = Math.max(u.radius, Math.min(H - u.radius, u.y));
+  const dx=goalX-u.x, dy=goalY-u.y, d=Math.hypot(dx,dy);
+  if (d <= stopDist) { if (u.dest) u.dest=null; return; }
+  u.x += (dx/d)*u.speed*dt; u.y += (dy/d)*u.speed*dt;
+  u.x = Math.max(u.radius, Math.min(W-u.radius, u.x));
+  u.y = Math.max(u.radius, Math.min(H-u.radius, u.y));
 }
 
 function pickTarget(u, enemies, enemyHQ, hqKey) {
-  let best = null, bestD = Infinity;
-  for (const e of enemies) {
-    if (e.dead) continue;
-    const d = dist(u, e);
-    if (d < bestD) { bestD = d; best = e; }
-  }
-  const hqD = dist(u, { x: enemyHQ.x + enemyHQ.w/2, y: enemyHQ.y });
+  let best=null, bestD=Infinity;
+  for (const e of enemies) { if (e.dead) continue; const d=dist(u,e); if (d<bestD){bestD=d;best=e;} }
+  const hqD = dist(u, {x:enemyHQ.x+enemyHQ.w/2, y:enemyHQ.y});
   return hqD < bestD ? hqKey : best;
+}
+
+// ─── ZONES ────────────────────────────────────────────────────────────────────
+function updateZones(dt) {
+  let bonusThisTick = 0;
+  for (const z of ZONES) {
+    let pc=0, ec=0;
+    for (const u of state.playerUnits) if (!u.dead && dist(u,z) <= z.radius) pc++;
+    for (const u of state.enemyUnits)  if (!u.dead && dist(u,z) <= z.radius) ec++;
+
+    if (pc > 0 && ec === 0)      z.progress = Math.min(100, z.progress + 45*dt*pc);
+    else if (ec > 0 && pc === 0) z.progress = Math.max(0,   z.progress - 45*dt*ec);
+
+    const wasOwner = z.owner;
+    if (z.progress >= 100) z.owner = 'player';
+    else if (z.progress <= 0) z.owner = 'enemy';
+    else if (z.progress < 100 && z.progress > 0 && wasOwner && pc===0 && ec===0) { /* hold */ }
+
+    if (z.owner === 'player') bonusThisTick += z.bonus;
+  }
+
+  // Zone income once per second
+  state.zoneTimer += dt;
+  if (state.zoneTimer >= 1) {
+    state.zoneTimer -= 1;
+    if (bonusThisTick > 0) addSupplies(bonusThisTick);
+  }
+
+  // Update zone bonus display
+  const total = ZONES.filter(z=>z.owner==='player').reduce((s,z)=>s+z.bonus,0);
+  document.getElementById('zoneBonus').textContent = total > 0 ? `🏴 +${total}/s` : '';
 }
 
 // ─── COMBAT ───────────────────────────────────────────────────────────────────
 function updateCombat(dt) {
   for (const u of state.playerUnits) combatUnit(u, dt, state.enemyUnits, HQ.enemy);
   for (const u of state.enemyUnits)  combatUnit(u, dt, state.playerUnits, HQ.player);
+  updateTurrets(dt);
 }
 
 function combatUnit(u, dt, enemies, enemyHQ) {
   u.fireTimer = Math.max(0, u.fireTimer - dt);
   if (u.fireTimer > 0) return;
 
-  let unitTarget = null, hqTarget = null, bestD = Infinity;
+  let unitTarget=null, hqTarget=null, bestD=Infinity;
 
-  // Explicit target
   if (u.target === 'enemyHQ' || u.target === 'playerHQ') {
-    const hq = u.target === 'enemyHQ' ? HQ.enemy : HQ.player;
-    const d = dist(u, { x: hq.x + hq.w/2, y: hq.y });
-    if (d <= u.range) { hqTarget = hq; bestD = d; }
+    const hq = u.target==='enemyHQ' ? HQ.enemy : HQ.player;
+    const d = dist(u, {x:hq.x+hq.w/2,y:hq.y});
+    if (d <= u.range) { hqTarget=hq; bestD=d; }
   } else if (u.target && !u.target.dead) {
-    const d = dist(u, u.target);
-    if (d <= u.range) { unitTarget = u.target; bestD = d; }
+    const d=dist(u,u.target);
+    if (d<=u.range) { unitTarget=u.target; bestD=d; }
   }
 
-  // Auto-scan nearby enemies
   if (!unitTarget && !hqTarget) {
     for (const e of enemies) {
       if (e.dead) continue;
-      const d = dist(u, e);
-      if (d <= u.range && d < bestD) { bestD = d; unitTarget = e; hqTarget = null; }
+      const d=dist(u,e);
+      if (d<=u.range && d<bestD) { bestD=d; unitTarget=e; hqTarget=null; }
     }
-    const hqD = dist(u, { x: enemyHQ.x + enemyHQ.w/2, y: enemyHQ.y });
-    if (hqD <= u.range && hqD < bestD) { hqTarget = enemyHQ; unitTarget = null; }
+    const hqD=dist(u,{x:enemyHQ.x+enemyHQ.w/2,y:enemyHQ.y});
+    if (hqD<=u.range && hqD<bestD) { hqTarget=enemyHQ; unitTarget=null; }
   }
 
   if (!unitTarget && !hqTarget) return;
+  u.fireTimer = 1/u.fireRate;
+  fireBullet(u.x, u.y, unitTarget, hqTarget, u.damage, u.team==='player'?'#ffff88':'#ffaa44', u.team);
+  state.particles.push({x:u.x,y:u.y,vx:0,vy:0,life:1,maxLife:0.07,color:'#ffffcc',size:7});
+}
 
-  u.fireTimer = 1 / u.fireRate;
+function updateTurrets(dt) {
+  for (const b of state.buildings) {
+    if (b.type !== 'turret') continue;
+    b.fireTimer = Math.max(0, b.fireTimer - dt);
+    if (b.fireTimer > 0) continue;
+    let target=null, bestD=Infinity;
+    for (const e of state.enemyUnits) {
+      if (e.dead) continue;
+      const d=dist(b,e);
+      if (d<=b.range && d<bestD) { bestD=d; target=e; }
+    }
+    if (!target) continue;
+    b.fireTimer = 1/b.fireRate;
+    fireBullet(b.x, b.y, target, null, b.damage, '#88ffaa', 'player');
+    state.particles.push({x:b.x,y:b.y,vx:0,vy:0,life:1,maxLife:0.07,color:'#aaffcc',size:6});
+  }
+}
 
-  state.bullets.push({
-    x: u.x, y: u.y,
-    speed: 320,
-    damage: u.damage,
-    color: u.team === 'player' ? '#ffff88' : '#ffaa44',
-    team: u.team,
-    unitTarget,
-    hqTarget,
-  });
-
-  // Muzzle flash
-  state.particles.push({ x: u.x, y: u.y, vx: 0, vy: 0, life: 1, maxLife: 0.07, color: '#ffffcc', size: 7 });
+function fireBullet(x, y, unitTarget, hqTarget, damage, color, team) {
+  state.bullets.push({ x, y, speed:320, damage, color, team, unitTarget, hqTarget });
 }
 
 // ─── BULLETS ──────────────────────────────────────────────────────────────────
 function updateBullets(dt) {
   state.bullets = state.bullets.filter(b => {
     let tx, ty;
+    if (b.hqTarget)                              { tx=b.hqTarget.x+b.hqTarget.w/2; ty=b.hqTarget.y; }
+    else if (!b.unitTarget || b.unitTarget.dead) { return false; }
+    else                                         { tx=b.unitTarget.x; ty=b.unitTarget.y; }
 
-    if (b.hqTarget) {
-      tx = b.hqTarget.x + b.hqTarget.w/2;
-      ty = b.hqTarget.y;
-    } else if (!b.unitTarget || b.unitTarget.dead) {
-      return false;
-    } else {
-      tx = b.unitTarget.x;
-      ty = b.unitTarget.y;
-    }
-
-    const dx = tx - b.x, dy = ty - b.y, d = Math.hypot(dx, dy);
-
+    const dx=tx-b.x, dy=ty-b.y, d=Math.hypot(dx,dy);
     if (d < 10) {
-      // Hit!
       if (b.hqTarget) {
         b.hqTarget.hp = Math.max(0, b.hqTarget.hp - b.damage);
         spawnHit(b.x, b.y, '#ff6600');
@@ -274,58 +337,34 @@ function updateBullets(dt) {
       }
       return false;
     }
-
-    b.x += (dx/d) * b.speed * dt;
-    b.y += (dy/d) * b.speed * dt;
+    b.x += (dx/d)*b.speed*dt; b.y += (dy/d)*b.speed*dt;
     return true;
   });
 }
 
 // ─── PARTICLES ────────────────────────────────────────────────────────────────
 function spawnExplosion(x, y, color) {
-  for (let i = 0; i < 12; i++) {
-    const angle = Math.random() * Math.PI * 2;
-    const speed = 40 + Math.random() * 100;
-    state.particles.push({
-      x, y,
-      vx: Math.cos(angle) * speed,
-      vy: Math.sin(angle) * speed,
-      life: 1, maxLife: 0.5 + Math.random() * 0.4,
-      color: i % 3 === 0 ? '#ff8800' : i % 3 === 1 ? '#ffdd00' : color,
-      size: 2 + Math.random() * 5,
-    });
+  for (let i=0; i<12; i++) {
+    const a=Math.random()*Math.PI*2, spd=40+Math.random()*100;
+    state.particles.push({x,y,vx:Math.cos(a)*spd,vy:Math.sin(a)*spd,life:1,
+      maxLife:0.5+Math.random()*0.4, color:i%3===0?'#ff8800':i%3===1?'#ffdd00':color, size:2+Math.random()*5});
   }
-  // smoke
-  for (let i = 0; i < 5; i++) {
-    state.particles.push({
-      x: x + (Math.random()-0.5)*10, y: y + (Math.random()-0.5)*10,
-      vx: (Math.random()-0.5)*20, vy: -20 - Math.random()*30,
-      life: 1, maxLife: 0.8 + Math.random()*0.5,
-      color: '#888888', size: 4 + Math.random()*6,
-    });
-  }
+  for (let i=0; i<5; i++)
+    state.particles.push({x:x+(Math.random()-.5)*10,y:y+(Math.random()-.5)*10,
+      vx:(Math.random()-.5)*20,vy:-20-Math.random()*30,life:1,maxLife:0.8+Math.random()*0.5,color:'#888',size:4+Math.random()*6});
 }
 
 function spawnHit(x, y, color) {
-  for (let i = 0; i < 5; i++) {
-    const angle = Math.random() * Math.PI * 2;
-    state.particles.push({
-      x, y,
-      vx: Math.cos(angle) * (20 + Math.random()*40),
-      vy: Math.sin(angle) * (20 + Math.random()*40),
-      life: 1, maxLife: 0.2,
-      color, size: 2 + Math.random()*3,
-    });
+  for (let i=0; i<5; i++) {
+    const a=Math.random()*Math.PI*2;
+    state.particles.push({x,y,vx:Math.cos(a)*(20+Math.random()*40),vy:Math.sin(a)*(20+Math.random()*40),
+      life:1,maxLife:0.2,color,size:2+Math.random()*3});
   }
 }
 
 function updateParticles(dt) {
   state.particles = state.particles.filter(p => {
-    p.x += p.vx * dt;
-    p.y += p.vy * dt;
-    p.vx *= 0.92; p.vy *= 0.92;
-    p.life -= dt / p.maxLife;
-    return p.life > 0;
+    p.x+=p.vx*dt; p.y+=p.vy*dt; p.vx*=0.92; p.vy*=0.92; p.life-=dt/p.maxLife; return p.life>0;
   });
 }
 
@@ -334,18 +373,43 @@ function cleanDeadUnits() {
   state.enemyUnits  = state.enemyUnits.filter(u => !u.dead);
 }
 
-// ─── MAP DRAWING ──────────────────────────────────────────────────────────────
+// ─── AI WAVES ─────────────────────────────────────────────────────────────────
+function buildAIWave() {
+  let budget = Math.floor(state.aiSupplies);
+  state.aiSupplies = 0;
+  const tankChance = Math.min(0.65, state.wave*0.08);
+  const jeepChance = Math.min(0.6,  state.wave*0.12+0.2);
+  while (budget >= 50) {
+    let type;
+    if (budget>=200 && Math.random()<tankChance)      type='tank';
+    else if (budget>=100 && Math.random()<jeepChance) type='jeep';
+    else if (budget>=150 && Math.random()<0.2)        type='heli';
+    else                                               type='soldier';
+    spawnEnemyUnit(type);
+    budget -= UNIT_DEFS[type].cost;
+  }
+  state.waveInterval = Math.max(10, 20 - state.wave*0.5);
+}
+
+function spawnEnemyUnit(type) {
+  const def = UNIT_DEFS[type];
+  state.enemyUnits.push({
+    x: HQ.enemy.x-10, y: HQ.enemy.y+(Math.random()-.5)*(HQ.enemy.h-20),
+    type, hp:def.hp, maxHp:def.hp, speed:def.speed, range:def.range,
+    damage:def.damage, fireRate:def.fireRate, radius:def.radius, color:def.eColor,
+    selected:false, fireTimer:Math.random()*(1/def.fireRate),
+    target:'playerHQ', dest:null, team:'enemy', dead:false,
+  });
+}
+
+// ─── DRAWING ──────────────────────────────────────────────────────────────────
 function drawMap() {
-  const ground = ctx.createLinearGradient(0, 0, W, 0);
-  ground.addColorStop(0,    '#2a3d1a');
-  ground.addColorStop(0.35, '#3a5228');
-  ground.addColorStop(0.65, '#3a5228');
-  ground.addColorStop(1,    '#3d1a1a');
-  ctx.fillStyle = ground; ctx.fillRect(0, 0, W, H);
-  ctx.fillStyle = '#7a6040'; ctx.fillRect(0, H/2-40, W, 80);
-  ctx.strokeStyle = '#a08050'; ctx.setLineDash([30,20]); ctx.lineWidth = 3;
-  ctx.beginPath(); ctx.moveTo(0, H/2); ctx.lineTo(W, H/2); ctx.stroke();
-  ctx.setLineDash([]);
+  const g = ctx.createLinearGradient(0,0,W,0);
+  g.addColorStop(0,'#2a3d1a'); g.addColorStop(0.35,'#3a5228'); g.addColorStop(0.65,'#3a5228'); g.addColorStop(1,'#3d1a1a');
+  ctx.fillStyle=g; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#7a6040'; ctx.fillRect(0,H/2-40,W,80);
+  ctx.strokeStyle='#a08050'; ctx.setLineDash([30,20]); ctx.lineWidth=3;
+  ctx.beginPath(); ctx.moveTo(0,H/2); ctx.lineTo(W,H/2); ctx.stroke(); ctx.setLineDash([]);
   drawTrees([140,40],[260,25],[400,55],[540,30],[660,45],[760,35]);
   drawTrees([160,H-50],[300,H-35],[450,H-60],[590,H-40],[720,H-50]);
   drawRocks([200,180],[350,420],[550,160],[700,380]);
@@ -353,141 +417,194 @@ function drawMap() {
 
 function drawTrees() {
   for (const [x,y] of arguments) {
-    ctx.fillStyle = '#1a3a10';
+    ctx.fillStyle='#1a3a10';
     ctx.beginPath(); ctx.moveTo(x,y-22); ctx.lineTo(x-14,y+8); ctx.lineTo(x+14,y+8); ctx.closePath(); ctx.fill();
     ctx.beginPath(); ctx.moveTo(x,y-36); ctx.lineTo(x-10,y-8); ctx.lineTo(x+10,y-8); ctx.closePath(); ctx.fill();
-    ctx.fillStyle = '#5a3a20'; ctx.fillRect(x-4,y+8,8,14);
+    ctx.fillStyle='#5a3a20'; ctx.fillRect(x-4,y+8,8,14);
   }
 }
 
 function drawRocks() {
   for (const [x,y] of arguments) {
-    ctx.fillStyle = '#556655'; ctx.beginPath(); ctx.ellipse(x,y,18,11,0.3,0,Math.PI*2); ctx.fill();
-    ctx.fillStyle = '#667766'; ctx.beginPath(); ctx.ellipse(x-5,y-4,10,6,-0.2,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#556655'; ctx.beginPath(); ctx.ellipse(x,y,18,11,0.3,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='#667766'; ctx.beginPath(); ctx.ellipse(x-5,y-4,10,6,-0.2,0,Math.PI*2); ctx.fill();
   }
 }
 
-// ─── HQ DRAWING ───────────────────────────────────────────────────────────────
+function drawZones() {
+  for (const z of ZONES) {
+    const c = z.owner==='player'?'#4488ff': z.owner==='enemy'?'#ff4444':'#aaaaaa';
+    // Zone circle
+    ctx.fillStyle = c+'22'; ctx.beginPath(); ctx.arc(z.x,z.y,z.radius,0,Math.PI*2); ctx.fill();
+    ctx.strokeStyle=c; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(z.x,z.y,z.radius,0,Math.PI*2); ctx.stroke();
+    // Capture arc
+    if (z.progress>0 && z.progress<100) {
+      ctx.strokeStyle='#ffff44'; ctx.lineWidth=3;
+      ctx.beginPath(); ctx.arc(z.x,z.y,z.radius+5,-Math.PI/2,-Math.PI/2+(z.progress/100)*Math.PI*2); ctx.stroke();
+    }
+    // Flag pole
+    ctx.strokeStyle='#aaa'; ctx.lineWidth=2;
+    ctx.beginPath(); ctx.moveTo(z.x,z.y+10); ctx.lineTo(z.x,z.y-28); ctx.stroke();
+    // Flag
+    ctx.fillStyle=c;
+    ctx.beginPath(); ctx.moveTo(z.x,z.y-28); ctx.lineTo(z.x+16,z.y-22); ctx.lineTo(z.x,z.y-16); ctx.closePath(); ctx.fill();
+    // Bonus label
+    ctx.fillStyle='#ffdd88'; ctx.font='bold 10px Courier New'; ctx.textAlign='center';
+    ctx.fillText(`+${z.bonus}/s`, z.x, z.y+z.radius+14);
+  }
+}
+
+function drawBuildings() {
+  for (const b of state.buildings) {
+    if (b.type === 'depot') {
+      ctx.fillStyle='#886622'; ctx.fillRect(b.x-22,b.y-14,44,28);
+      ctx.fillStyle='#aa8833'; ctx.fillRect(b.x-16,b.y-20,32,9);
+      ctx.fillStyle='#cc9944'; ctx.fillRect(b.x-5,b.y-26,10,7);
+      ctx.strokeStyle='#ccaa55'; ctx.lineWidth=1; ctx.strokeRect(b.x-22,b.y-14,44,28);
+      ctx.fillStyle='#ffd700'; ctx.font='bold 9px Courier New'; ctx.textAlign='center';
+      ctx.fillText('DEPOT', b.x, b.y+26);
+      ctx.fillStyle='#88ffcc'; ctx.fillText(`+${BUILDING_DEFS.depot.income}/s`, b.x, b.y+36);
+    } else if (b.type === 'turret') {
+      // Draw turret range ring (subtle)
+      ctx.strokeStyle='#88ff8822'; ctx.lineWidth=1; ctx.setLineDash([4,6]);
+      ctx.beginPath(); ctx.arc(b.x,b.y,b.range,0,Math.PI*2); ctx.stroke(); ctx.setLineDash([]);
+      // Base
+      ctx.fillStyle='#445533'; ctx.beginPath(); ctx.arc(b.x,b.y,18,0,Math.PI*2); ctx.fill();
+      ctx.strokeStyle='#667744'; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(b.x,b.y,18,0,Math.PI*2); ctx.stroke();
+      // Barrel
+      ctx.strokeStyle='#aabb88'; ctx.lineWidth=5;
+      ctx.beginPath(); ctx.moveTo(b.x,b.y); ctx.lineTo(b.x+24,b.y); ctx.stroke();
+      ctx.fillStyle='#88aa66'; ctx.font='bold 9px Courier New'; ctx.textAlign='center';
+      ctx.fillText('TURRET', b.x, b.y+30);
+    }
+  }
+}
+
 function drawHQ(hq, label) {
-  const { x, y, w, h, hp, maxHp, color } = hq;
-  const cx = x+w/2, top = y-h/2;
-  ctx.fillStyle = color; ctx.fillRect(x, top, w, h);
-  const notchW=12, notchH=10, gap=8;
-  for (let nx=x+4; nx<x+w-notchW; nx+=notchW+gap) ctx.fillRect(nx, top-notchH, notchW, notchH);
+  const {x,y,w,h,hp,maxHp,color}=hq, cx=x+w/2, top=y-h/2;
+  ctx.fillStyle=color; ctx.fillRect(x,top,w,h);
+  const nW=12,nH=10,gap=8;
+  for (let nx=x+4; nx<x+w-nW; nx+=nW+gap) ctx.fillRect(nx,top-nH,nW,nH);
   ctx.strokeStyle='#ffffff44'; ctx.lineWidth=2; ctx.strokeRect(x,top,w,h);
   ctx.strokeStyle='#aaa'; ctx.lineWidth=2;
   ctx.beginPath(); ctx.moveTo(cx,top-10); ctx.lineTo(cx,top-40); ctx.stroke();
-  ctx.fillStyle = label==='ALLIED' ? '#4488ff' : '#ff4444';
+  ctx.fillStyle=label==='ALLIED'?'#4488ff':'#ff4444';
   ctx.beginPath(); ctx.moveTo(cx,top-40); ctx.lineTo(cx+20,top-33); ctx.lineTo(cx,top-26); ctx.closePath(); ctx.fill();
   ctx.fillStyle='#fff'; ctx.font='bold 11px Courier New'; ctx.textAlign='center';
   ctx.fillText(label, cx, top-48);
-  const barW=w+20, barH=10, barX=x-10, barY=top-62;
-  ctx.fillStyle='#333'; ctx.fillRect(barX,barY,barW,barH);
-  const pct = Math.max(0, hp/maxHp);
-  ctx.fillStyle = pct>0.5?'#44cc44':pct>0.25?'#ccaa22':'#cc3322';
-  ctx.fillRect(barX,barY,barW*pct,barH);
-  ctx.strokeStyle='#666'; ctx.lineWidth=1; ctx.strokeRect(barX,barY,barW,barH);
-  ctx.fillStyle='#eee'; ctx.font='10px Courier New';
-  ctx.fillText(`${Math.ceil(hp)} / ${maxHp}`, cx, barY-2);
+  const bW=w+20,bH=10,bX=x-10,bY=top-62;
+  ctx.fillStyle='#333'; ctx.fillRect(bX,bY,bW,bH);
+  const pct=Math.max(0,hp/maxHp);
+  ctx.fillStyle=pct>0.5?'#44cc44':pct>0.25?'#ccaa22':'#cc3322'; ctx.fillRect(bX,bY,bW*pct,bH);
+  ctx.strokeStyle='#666'; ctx.lineWidth=1; ctx.strokeRect(bX,bY,bW,bH);
+  ctx.fillStyle='#eee'; ctx.font='10px Courier New'; ctx.fillText(`${Math.ceil(hp)} / ${maxHp}`,cx,bY-2);
 }
 
-// ─── UNIT DRAWING ─────────────────────────────────────────────────────────────
 function drawUnit(u) {
-  const { x, y, type, color, selected, hp, maxHp, radius } = u;
-  const def = UNIT_DEFS[type];
-
+  const {x,y,type,color,selected,hp,maxHp,radius}=u;
   if (selected) {
     ctx.strokeStyle='#ffff00'; ctx.lineWidth=2; ctx.setLineDash([4,3]);
-    ctx.beginPath(); ctx.arc(x,y,radius+4,0,Math.PI*2); ctx.stroke();
-    ctx.setLineDash([]);
+    ctx.beginPath(); ctx.arc(x,y,radius+4,0,Math.PI*2); ctx.stroke(); ctx.setLineDash([]);
   }
-
-  if (type === 'soldier') {
-    ctx.fillStyle = color;
-    ctx.beginPath(); ctx.arc(x,y+2,radius-2,0,Math.PI*2); ctx.fill();
+  if (type==='soldier') {
+    ctx.fillStyle=color; ctx.beginPath(); ctx.arc(x,y+2,radius-2,0,Math.PI*2); ctx.fill();
     ctx.beginPath(); ctx.arc(x,y-4,7,Math.PI,0); ctx.fill();
-    ctx.fillStyle = u.team==='player' ? '#88aaff' : '#ff8888';
-    ctx.fillRect(x-7,y-5,14,3);
-  } else if (type === 'jeep') {
-    ctx.fillStyle = color; ctx.fillRect(x-radius,y-radius/2,radius*2,radius);
+    ctx.fillStyle=u.team==='player'?'#88aaff':'#ff8888'; ctx.fillRect(x-7,y-5,14,3);
+  } else if (type==='jeep') {
+    ctx.fillStyle=color; ctx.fillRect(x-radius,y-radius/2,radius*2,radius);
     ctx.fillStyle='#222';
     ctx.beginPath(); ctx.arc(x-radius+5,y+radius/2,5,0,Math.PI*2); ctx.fill();
     ctx.beginPath(); ctx.arc(x+radius-5,y+radius/2,5,0,Math.PI*2); ctx.fill();
     ctx.fillStyle='#aaddff88'; ctx.fillRect(x-6,y-radius/2-4,12,6);
-  } else if (type === 'tank') {
-    ctx.fillStyle='#333';
-    ctx.fillRect(x-radius,y-radius+4,radius*2,8);
-    ctx.fillRect(x-radius,y+radius-12,radius*2,8);
-    ctx.fillStyle=color;
-    ctx.fillRect(x-radius+4,y-radius+6,(radius-4)*2,(radius-6)*2);
+  } else if (type==='tank') {
+    ctx.fillStyle='#333'; ctx.fillRect(x-radius,y-radius+4,radius*2,8); ctx.fillRect(x-radius,y+radius-12,radius*2,8);
+    ctx.fillStyle=color; ctx.fillRect(x-radius+4,y-radius+6,(radius-4)*2,(radius-6)*2);
     ctx.beginPath(); ctx.arc(x,y,9,0,Math.PI*2); ctx.fill();
-    const dir = u.team==='player' ? 1 : -1;
+    const dir=u.team==='player'?1:-1;
     ctx.strokeStyle='#aaa'; ctx.lineWidth=3;
     ctx.beginPath(); ctx.moveTo(x,y); ctx.lineTo(x+dir*18,y); ctx.stroke();
+  } else if (type==='heli') {
+    // Shadow
+    ctx.fillStyle='#00000033'; ctx.beginPath(); ctx.ellipse(x,y+4,radius,radius*0.4,0,0,Math.PI*2); ctx.fill();
+    // Body
+    ctx.fillStyle=color; ctx.beginPath(); ctx.ellipse(x,y,radius,radius*0.55,0,0,Math.PI*2); ctx.fill();
+    // Rotor blades (spinning)
+    const angle=Date.now()/80;
+    ctx.strokeStyle='#ccddcc'; ctx.lineWidth=2.5;
+    ctx.beginPath(); ctx.moveTo(x+Math.cos(angle)*radius*1.4,y+Math.sin(angle)*radius*0.35);
+    ctx.lineTo(x-Math.cos(angle)*radius*1.4,y-Math.sin(angle)*radius*0.35); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x+Math.cos(angle+Math.PI/2)*radius*1.4,y+Math.sin(angle+Math.PI/2)*radius*0.35);
+    ctx.lineTo(x-Math.cos(angle+Math.PI/2)*radius*1.4,y-Math.sin(angle+Math.PI/2)*radius*0.35); ctx.stroke();
+    // Tail
+    const dir=u.team==='player'?-1:1;
+    ctx.fillStyle=color; ctx.fillRect(x+dir*radius*0.4,y-2,dir*radius*0.9,4);
+    ctx.strokeStyle='#ffffff44'; ctx.lineWidth=1; ctx.beginPath(); ctx.ellipse(x,y,radius,radius*0.55,0,0,Math.PI*2); ctx.stroke();
   }
-
-  ctx.strokeStyle='#ffffff55'; ctx.lineWidth=1;
-  ctx.beginPath(); ctx.arc(x,y,radius,0,Math.PI*2); ctx.stroke();
-
-  const bw = radius*2.2;
+  ctx.strokeStyle='#ffffff55'; ctx.lineWidth=1; ctx.beginPath(); ctx.arc(x,y,radius,0,Math.PI*2); ctx.stroke();
+  const bw=radius*2.2;
   ctx.fillStyle='#333'; ctx.fillRect(x-bw/2,y-radius-10,bw,5);
-  ctx.fillStyle = hp/maxHp>0.5?'#44cc44':'#cc4422';
-  ctx.fillRect(x-bw/2,y-radius-10,bw*(hp/maxHp),5);
+  ctx.fillStyle=hp/maxHp>0.5?'#44cc44':'#cc4422'; ctx.fillRect(x-bw/2,y-radius-10,bw*(hp/maxHp),5);
 }
 
-// ─── BULLET DRAWING ───────────────────────────────────────────────────────────
 function drawBullets() {
   for (const b of state.bullets) {
-    ctx.fillStyle = b.color;
-    ctx.beginPath(); ctx.arc(b.x, b.y, 3, 0, Math.PI*2); ctx.fill();
-    // tracer trail
-    ctx.strokeStyle = b.color + '66';
-    ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.moveTo(b.x, b.y);
-    const tx = b.hqTarget ? b.hqTarget.x+b.hqTarget.w/2 : (b.unitTarget?.x ?? b.x);
-    const ty = b.hqTarget ? b.hqTarget.y : (b.unitTarget?.y ?? b.y);
-    const dx = b.x-tx, dy = b.y-ty, d = Math.hypot(dx,dy)||1;
-    ctx.lineTo(b.x + (dx/d)*12, b.y + (dy/d)*12);
-    ctx.stroke();
+    ctx.fillStyle=b.color; ctx.beginPath(); ctx.arc(b.x,b.y,3,0,Math.PI*2); ctx.fill();
+    const tx=b.hqTarget?b.hqTarget.x+b.hqTarget.w/2:(b.unitTarget?.x??b.x);
+    const ty=b.hqTarget?b.hqTarget.y:(b.unitTarget?.y??b.y);
+    const dx=b.x-tx, dy=b.y-ty, d=Math.hypot(dx,dy)||1;
+    ctx.strokeStyle=b.color+'66'; ctx.lineWidth=1.5;
+    ctx.beginPath(); ctx.moveTo(b.x,b.y); ctx.lineTo(b.x+(dx/d)*12,b.y+(dy/d)*12); ctx.stroke();
   }
 }
 
-// ─── PARTICLE DRAWING ─────────────────────────────────────────────────────────
 function drawParticles() {
   for (const p of state.particles) {
-    ctx.globalAlpha = Math.max(0, p.life);
-    ctx.fillStyle = p.color;
-    ctx.beginPath(); ctx.arc(p.x, p.y, Math.max(0.5, p.size * p.life), 0, Math.PI*2); ctx.fill();
+    ctx.globalAlpha=Math.max(0,p.life); ctx.fillStyle=p.color;
+    ctx.beginPath(); ctx.arc(p.x,p.y,Math.max(0.5,p.size*p.life),0,Math.PI*2); ctx.fill();
   }
-  ctx.globalAlpha = 1;
+  ctx.globalAlpha=1;
 }
 
-// ─── DRAG BOX & MARKERS ───────────────────────────────────────────────────────
 function drawDragBox() {
   if (!drag.active) return;
-  const x=Math.min(drag.sx,drag.ex), y=Math.min(drag.sy,drag.ey);
-  const w=Math.abs(drag.ex-drag.sx), h=Math.abs(drag.ey-drag.sy);
+  const x=Math.min(drag.sx,drag.ex),y=Math.min(drag.sy,drag.ey);
+  const w=Math.abs(drag.ex-drag.sx),h=Math.abs(drag.ey-drag.sy);
   ctx.strokeStyle='#ffff00aa'; ctx.lineWidth=1; ctx.setLineDash([4,2]);
-  ctx.strokeRect(x,y,w,h);
-  ctx.fillStyle='#ffff0015'; ctx.fillRect(x,y,w,h);
-  ctx.setLineDash([]);
+  ctx.strokeRect(x,y,w,h); ctx.fillStyle='#ffff0015'; ctx.fillRect(x,y,w,h); ctx.setLineDash([]);
 }
 
 function drawMoveMarkers() {
   for (const u of state.playerUnits) {
     if (!u.dest) continue;
     ctx.strokeStyle='#00ff0066'; ctx.lineWidth=1; ctx.setLineDash([3,3]);
-    ctx.beginPath(); ctx.moveTo(u.x,u.y); ctx.lineTo(u.dest.x,u.dest.y); ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.fillStyle='#00ff0088';
-    ctx.beginPath(); ctx.arc(u.dest.x,u.dest.y,4,0,Math.PI*2); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(u.x,u.y); ctx.lineTo(u.dest.x,u.dest.y); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle='#00ff0088'; ctx.beginPath(); ctx.arc(u.dest.x,u.dest.y,4,0,Math.PI*2); ctx.fill();
+  }
+}
+
+function drawHUD() {
+  const timeLeft=Math.ceil(state.waveInterval-state.aiTimer);
+  const waveLabel=state.wave===0?`First wave in ${timeLeft}s`:`Wave ${state.wave} — next in ${timeLeft}s`;
+  ctx.fillStyle='#00000066'; ctx.fillRect(W/2-115,6,230,22);
+  ctx.fillStyle=timeLeft<=5?'#ff6644':'#ffdd88'; ctx.font='bold 13px Courier New'; ctx.textAlign='center';
+  ctx.fillText(waveLabel, W/2, 22);
+
+  // Build zone highlight
+  if (state.buildMode) {
+    ctx.fillStyle='#88ff4422'; ctx.fillRect(80,30,150,H-60);
+    ctx.strokeStyle='#88ff44aa'; ctx.lineWidth=2; ctx.setLineDash([6,4]);
+    ctx.strokeRect(80,30,150,H-60); ctx.setLineDash([]);
+    ctx.fillStyle='#88ff44cc'; ctx.font='11px Courier New'; ctx.textAlign='center';
+    ctx.fillText('YOUR BASE', 155, 52);
   }
 }
 
 // ─── MAIN DRAW ────────────────────────────────────────────────────────────────
 function draw() {
   drawMap();
+  drawZones();
   drawMoveMarkers();
+  drawBuildings();
   drawHQ(HQ.player,'ALLIED');
   drawHQ(HQ.enemy,'ENEMY');
   drawParticles();
@@ -499,26 +616,19 @@ function draw() {
 
 // ─── GAME LOOP ────────────────────────────────────────────────────────────────
 function loop(ts) {
-  const dt = Math.min((ts - state.lastTime) / 1000, 0.05);
-  state.lastTime = ts;
+  const dt=Math.min((ts-state.lastTime)/1000, 0.05);
+  state.lastTime=ts;
 
   if (!state.gameOver) {
-    // Passive supply income
-    state.supplyTimer += dt;
-    if (state.supplyTimer >= 1) {
-      state.supplyTimer -= 1;
-      addSupplies(10);
-    }
+    // Passive income
+    state.supplyTimer+=dt;
+    if (state.supplyTimer>=1) { state.supplyTimer-=1; addSupplies(10); }
+    // AI income + waves
+    state.aiSupplies+=10*dt;
+    state.aiTimer+=dt;
+    if (state.aiTimer>=state.waveInterval) { state.aiTimer=0; state.wave++; buildAIWave(); }
 
-    // AI income + wave timer
-    state.aiSupplies += 10 * dt;
-    state.aiTimer += dt;
-    if (state.aiTimer >= state.waveInterval) {
-      state.aiTimer = 0;
-      state.wave++;
-      buildAIWave();
-    }
-
+    updateZones(dt);
     updateUnits(dt);
     updateCombat(dt);
     updateBullets(dt);
@@ -530,81 +640,74 @@ function loop(ts) {
   requestAnimationFrame(loop);
 }
 
-requestAnimationFrame((ts) => { state.lastTime = ts; requestAnimationFrame(loop); });
+requestAnimationFrame((ts) => { state.lastTime=ts; requestAnimationFrame(loop); });
 
-// ─── AI WAVE BUILDER ──────────────────────────────────────────────────────────
-function buildAIWave() {
-  let budget = Math.floor(state.aiSupplies);
-  state.aiSupplies = 0;
-
-  // Ramp up unit mix with wave number
-  const tankChance = Math.min(0.65, state.wave * 0.08);
-  const jeepChance = Math.min(0.6,  state.wave * 0.12 + 0.2);
-
-  while (budget >= 50) {
-    let type;
-    if (budget >= 200 && Math.random() < tankChance)      type = 'tank';
-    else if (budget >= 100 && Math.random() < jeepChance) type = 'jeep';
-    else                                                    type = 'soldier';
-    spawnEnemyUnit(type);
-    budget -= UNIT_DEFS[type].cost;
-  }
-
-  // Tighten wave interval as game progresses (min 10s)
-  state.waveInterval = Math.max(10, 20 - state.wave * 0.5);
-}
-
-function spawnEnemyUnit(type) {
-  const def = UNIT_DEFS[type];
-  const spawnX = HQ.enemy.x - 10;
-  const spawnY = HQ.enemy.y + (Math.random() - 0.5) * (HQ.enemy.h - 20);
-  state.enemyUnits.push({
-    x: spawnX, y: spawnY,
-    type, hp: def.hp, maxHp: def.hp,
-    speed: def.speed, range: def.range,
-    damage: def.damage, fireRate: def.fireRate,
-    radius: def.radius, color: def.eColor,
-    selected: false, fireTimer: Math.random() * (1 / def.fireRate),
-    target: 'playerHQ', dest: null, team: 'enemy', dead: false,
-  });
-}
-
-// ─── ON-CANVAS HUD ────────────────────────────────────────────────────────────
-function drawHUD() {
-  const timeLeft = Math.ceil(state.waveInterval - state.aiTimer);
-  const waveLabel = state.wave === 0 ? `First wave in ${timeLeft}s` : `Wave ${state.wave} — next in ${timeLeft}s`;
-
-  // Centre banner
-  ctx.fillStyle = '#00000066';
-  ctx.fillRect(W/2 - 110, 6, 220, 22);
-  ctx.fillStyle = timeLeft <= 5 ? '#ff6644' : '#ffdd88';
-  ctx.font = 'bold 13px Courier New';
-  ctx.textAlign = 'center';
-  ctx.fillText(waveLabel, W/2, 22);
-}
-
-// ─── DEPLOY ───────────────────────────────────────────────────────────────────
+// ─── PLAYER ACTIONS ───────────────────────────────────────────────────────────
 function deployUnit(type) {
-  const def = UNIT_DEFS[type];
+  const def=UNIT_DEFS[type];
   if (state.supplies < def.cost) return;
   addSupplies(-def.cost);
-  const spawnX = HQ.player.x + HQ.player.w + 10;
-  const spawnY = HQ.player.y + (Math.random() - 0.5) * (HQ.player.h - 20);
+  const mult=getUpgradeMult(type);
   state.playerUnits.push({
-    x: spawnX, y: spawnY,
-    type, hp: def.hp, maxHp: def.hp,
-    speed: def.speed, range: def.range,
-    damage: def.damage, fireRate: def.fireRate,
-    radius: def.radius, color: def.color,
-    selected: false, fireTimer: Math.random() * (1/def.fireRate),
-    target: null, dest: null, team: 'player', dead: false,
+    x: HQ.player.x+HQ.player.w+10,
+    y: HQ.player.y+(Math.random()-.5)*(HQ.player.h-20),
+    type, hp:Math.round(def.hp*mult), maxHp:Math.round(def.hp*mult),
+    speed:def.speed, range:def.range, damage:Math.round(def.damage*mult),
+    fireRate:def.fireRate, radius:def.radius, color:def.color,
+    selected:false, fireTimer:Math.random()*(1/def.fireRate),
+    target:null, dest:null, team:'player', dead:false,
   });
 }
 
-function updateButtons() {
-  document.getElementById('btnSoldier').disabled = state.supplies < 50;
-  document.getElementById('btnJeep').disabled    = state.supplies < 100;
-  document.getElementById('btnTank').disabled    = state.supplies < 200;
+function setBuildMode(type) {
+  if (state.buildMode === type) {
+    // Toggle off
+    state.buildMode=null; canvas.style.cursor='crosshair';
+    document.getElementById('buildHint').style.display='none';
+    document.getElementById('btnDepot').classList.remove('active');
+    document.getElementById('btnTurret').classList.remove('active');
+    return;
+  }
+  state.buildMode=type; canvas.style.cursor='cell';
+  document.getElementById('buildHint').style.display='block';
+  document.getElementById('btnDepot').classList.toggle('active', type==='depot');
+  document.getElementById('btnTurret').classList.toggle('active', type==='turret');
+}
+
+function upgradeCategory(cat) {
+  const def=UPGRADE_CATS[cat];
+  const level=state.upgradeLevels[cat];
+  if (level >= 2) return;
+  const cost=def.costs[level];
+  if (state.supplies < cost) return;
+  addSupplies(-cost);
+  state.upgradeLevels[cat]++;
+  const mult=1+state.upgradeLevels[cat]*0.3;
+  // Apply to existing player units of this category
+  for (const u of state.playerUnits) {
+    if (!def.applies.includes(u.type)) continue;
+    const base=UNIT_DEFS[u.type];
+    u.maxHp=Math.round(base.hp*mult);
+    u.damage=Math.round(base.damage*mult);
+  }
+  updateAllButtons();
+}
+
+function updateAllButtons() {
+  const s=state.supplies;
+  document.getElementById('btnSoldier').disabled = s<50;
+  document.getElementById('btnJeep').disabled    = s<100;
+  document.getElementById('btnTank').disabled    = s<200;
+  document.getElementById('btnHeli').disabled    = s<150;
+  document.getElementById('btnDepot').disabled   = s<150 || state.buildings.length>=5;
+  document.getElementById('btnTurret').disabled  = s<200 || state.buildings.length>=5;
+
+  for (const [cat,def] of Object.entries(UPGRADE_CATS)) {
+    const lvl=state.upgradeLevels[cat];
+    const btn=document.getElementById(`btnUp${cat.charAt(0).toUpperCase()+cat.slice(1)}`);
+    if (lvl>=2) { btn.textContent=`✅ ${def.label} MAX`; btn.disabled=true; }
+    else        { const cost=def.costs[lvl]; btn.textContent=`⬆ ${def.label} Lv${lvl+2} ($${cost})`; btn.disabled=s<cost; }
+  }
 }
 </script>
 </body>
